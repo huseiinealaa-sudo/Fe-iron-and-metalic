@@ -6,9 +6,15 @@
 # source tree instead of the compiled site.
 name: Deploy to Pages
 
+# The github-pages environment only accepts deployments from the repository's
+# DEFAULT branch. This repository was created empty, so the first branch pushed
+# to it became the default — which is why deploying from main was rejected with
+# "Branch main is not allowed to deploy to github-pages". Both branches are
+# listed so the deployment keeps working before and after the default is moved
+# to main; a push from whichever branch is not the default is simply rejected.
 on:
   push:
-    branches: [main]
+    branches: [main, claude/clever-knuth-i5pzec]
   workflow_dispatch:
 
 permissions:
