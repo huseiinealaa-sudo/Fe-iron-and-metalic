@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --safe-t: env(safe-area-inset-top, 0px);
+    --safe-b: env(safe-area-inset-bottom, 0px);
+  }
+
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    @apply bg-shell-950 text-steel-300 font-ar antialiased;
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Numbers and unit symbols read left-to-right even inside Arabic prose. */
+  .ltr { direction: ltr; unicode-bidi: isolate; }
+}
+
+@layer components {
+  .panel {
+    @apply bg-shell-900/85 border border-shell-700/70 rounded-xl backdrop-blur-sm;
+  }
+
+  .chip {
+    @apply px-3 py-2 rounded-lg text-sm border transition-colors select-none;
+    min-height: 44px;
+  }
+
+  .tone-ok   { @apply text-stress-ok; }
+  .tone-warn { @apply text-stress-warn; }
+  .tone-fail { @apply text-stress-fail; }
+  .tone-info { @apply text-steel-500; }
+}
+
+/* ---- touch-first range sliders: a 44px target with a visible 6px track ---- */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 44px;
+  background: transparent;
+  cursor: pointer;
+  touch-action: pan-y;
+}
+input[type='range']::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(to left, #f0b429 var(--fill, 0%), #26323f var(--fill, 0%));
+}
+input[type='range']::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(to left, #f0b429 var(--fill, 0%), #26323f var(--fill, 0%));
+}
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 26px;
+  height: 26px;
+  margin-top: -10px;
+  border-radius: 999px;
+  background: #e9eef3;
+  border: 3px solid #0d1117;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+input[type='range']::-moz-range-thumb {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: #e9eef3;
+  border: 3px solid #0d1117;
+}
+input[type='range']:disabled::-webkit-slider-thumb { background: #5b6c7c; }
+
+/* Thin scrollbars that do not steal space on a tablet. */
+* { scrollbar-width: thin; scrollbar-color: #3a4856 transparent; }
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-thumb { background: #3a4856; border-radius: 999px; }

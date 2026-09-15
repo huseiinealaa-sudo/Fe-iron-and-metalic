@@ -1,0 +1,36 @@
+{
+  "name": "fe-iron-and-metalic",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "verify:engine": "tsx scripts/verify-engine.ts",
+    "verify:view": "node scripts/verify-view.mjs"
+  },
+  "dependencies": {
+    "@react-three/drei": "^9.122.0",
+    "@react-three/fiber": "^8.18.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.169.0",
+    "zustand": "^4.5.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@types/three": "^0.169.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "autoprefixer": "^10.6.1",
+    "playwright": "^1.63.0",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^3.4.19",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.21"
+  },
+  "description": "مخطّط تفاعلي ثلاثي الأبعاد لأنماط فشل الفولاذ غير القابل للصدأ"
+}
