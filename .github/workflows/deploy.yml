@@ -1,9 +1,14 @@
-name: build
+# Builds the application and publishes it to GitHub Pages.
+#
+# Shape follows GitHub's own Pages template: one job, configure-pages before
+# the upload, and the v5 actions. What it adds is the build — the template
+# publishes the repository as-is, which for a Vite application would serve the
+# source tree instead of the compiled site.
+name: Deploy to Pages
 
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -11,41 +16,48 @@ permissions:
   pages: write
   id-token: write
 
+# One deployment at a time, and never cancel one that is already running.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  build:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+
       - name: Install dependencies
-        # The playwright package pulls browsers in its install script; the
+        # The playwright package fetches browsers in its install script; the
         # browser check runs locally, not here, so skip the download.
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
         run: npm ci
+
       - name: Physics checks
         run: npm run verify:engine
+
       - name: Type check and build
         run: npm run build
-      - uses: actions/upload-pages-artifact@v3
-        if: github.ref == 'refs/heads/main'
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload the built site
+        uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
-  deploy:
-    if: github.ref == 'refs/heads/main'
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - id: deploy
-        uses: actions/deploy-pages@v4
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
