@@ -24,7 +24,12 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - name: Install dependencies
+        # The playwright package pulls browsers in its install script; the
+        # browser check runs locally, not here, so skip the download.
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: npm ci
       - name: Physics checks
         run: npm run verify:engine
       - name: Type check and build
