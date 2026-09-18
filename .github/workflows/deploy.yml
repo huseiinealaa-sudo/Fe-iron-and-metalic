@@ -8,13 +8,13 @@ name: Deploy to Pages
 
 # The github-pages environment only accepts deployments from the repository's
 # DEFAULT branch. This repository was created empty, so the first branch pushed
-# to it became the default — which is why deploying from main was rejected with
-# "Branch main is not allowed to deploy to github-pages". Both branches are
-# listed so the deployment keeps working before and after the default is moved
-# to main; a push from whichever branch is not the default is simply rejected.
+# to it became the default, and that is the only branch listed here: a push
+# from any other branch is rejected at the environment gate and mails the
+# owner a failure. If the default branch is ever moved to main, change this
+# line to match.
 on:
   push:
-    branches: [main, claude/clever-knuth-i5pzec]
+    branches: [claude/clever-knuth-i5pzec]
   workflow_dispatch:
 
 permissions:
