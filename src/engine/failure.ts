@@ -7,7 +7,9 @@
  * a constant is fitted, the fit and its anchor point are named in a comment.
  */
 
-import { alloyById, cpt, shearModulus, type Alloy } from '../data/alloys'
+import {
+  alloyById, cpt, isBrittle, pren, sccThreshold, sensitisationWindow, shearModulus, type Alloy,
+} from '../data/alloys'
 import { modeById, type FailureMode } from '../data/modes'
 import { SPECIMEN } from '../data/specimen'
 import {
@@ -154,7 +156,7 @@ function tension(alloy: Alloy, mode: FailureMode, p: Params): TestState {
     geom: {
       ...ZERO_GEOM, ...thermal(p.tempC),
       axialStrain: shown,
-      neck: neck * (1 - 0.7 * brittle),
+      neck: neck * (1 - 0.95 * brittle),
       crackDepth: failed ? 1 : neck > 0.85 ? (neck - 0.85) / 0.15 : 0,
       crackAngle: brittle * Math.PI * 0.25,
       gap: failed ? clamp((p.drive - 0.92) / 0.08) * 0.22 : 0,
@@ -186,6 +188,43 @@ function compression(alloy: Alloy, mode: FailureMode, p: Params): TestState {
   const hot = hotFactor(alloy, p.tempC)
   const eps = p.drive
   const lambda = Math.max(8, p.slenderness)
+
+  // Grey iron has no yield point to speak of: it carries three to four times
+  // its tensile strength in compression, then shears apart on 45° planes.
+  if (isBrittle(alloy)) {
+    const comp = (alloy.compressive ?? alloy.Rm * 3) * hot
+    const crushStrain = 0.03
+    const sigmaC = Math.min(emod(alloy) * eps, comp)
+    const crushed = eps >= crushStrain
+    return {
+      alloy, mode,
+      stageAr: crushed ? 'تهشّم قصّي بزاوية 45°' : sigmaC >= comp * 0.98 ? 'عند مقاومة الضغط' : 'انضغاط مطاطي',
+      stageTone: crushed ? 'fail' : sigmaC >= comp * 0.98 ? 'warn' : 'ok',
+      progress: clamp(eps / crushStrain),
+      failed: crushed,
+      utilisation: clamp(sigmaC / comp),
+      peakStressMPa: sigmaC,
+      curveMarker: null,
+      geom: {
+        ...ZERO_GEOM, ...thermal(p.tempC),
+        axialStrain: -Math.min(eps, crushStrain),
+        barrel: 0.05,
+        crackDepth: crushed ? clamp((eps - crushStrain) * 25) : 0,
+        crackAngle: Math.PI / 4,
+        brittle: 1,
+      },
+      readouts: [
+        { labelAr: 'الانضغاط', value: fmt(Math.min(eps, crushStrain) * 100, 2), unit: '%' },
+        { labelAr: 'الإجهاد المسلّط', value: fmt(sigmaC, 0), unit: 'MPa' },
+        { labelAr: 'مقاومة الضغط', value: fmt(comp, 0), unit: 'MPa', tone: 'info' },
+        { labelAr: 'مقاومة الشدّ Rm', value: fmt(alloy.Rm * hot, 0), unit: 'MPa', tone: 'info' },
+        { labelAr: 'نسبة الضغط إلى الشدّ', value: fmt(comp / (alloy.Rm * hot), 1), unit: '×', tone: 'ok' },
+      ],
+      verdictAr: crushed
+        ? `تهشّم عند ${fmt(comp, 0)} MPa على مستويات قصّ بزاوية 45° — لكن لاحظ: هذا ${fmt(comp / (alloy.Rm * hot), 1)} أضعاف ما يحمله في الشدّ. لهذا تُصنع منه المشدّات والقواعد لا الأذرع.`
+        : 'رقائق الجرافيت شقوق في الشدّ وليست كذلك في الضغط: الضغط يغلقها. لهذا يحمل حديد الزهر في الضغط أضعاف ما يحمله في الشدّ.',
+    }
+  }
   // Euler critical stress for the column, MPa.
   const sigmaCr = (Math.PI * Math.PI * emod(alloy)) / (lambda * lambda)
   const sigma = engStress(alloy, eps) * hot
@@ -388,6 +427,15 @@ function directShear(alloy: Alloy, mode: FailureMode, p: Params): TestState {
 
 // ------------------------------------------------------------------- fatigue
 
+/**
+ * Whether the S-N curve flattens into a true endurance limit. Body-centred and
+ * hexagonal lattices do; face-centred ones (austenitic steel, aluminium, copper)
+ * keep sliding, and so does tin.
+ */
+export function hasEnduranceLimit(a: Alloy): boolean {
+  return a.lattice !== 'FCC' && a.family !== 'tin'
+}
+
 /** S-N life. Anchored at 0.9*Rm for 1e3 cycles and the grade's 1e7 strength. */
 export function fatigueLife(alloy: Alloy, amp: number): number {
   const s1e3 = 0.9 * alloy.Rm
@@ -396,7 +444,7 @@ export function fatigueLife(alloy: Alloy, amp: number): number {
   const n1 = 1e3 * Math.pow(amp / s1e3, 1 / b)
   if (n1 <= 1e7) return Math.max(1, n1)
   // Past the knee: FCC keeps falling (no true endurance limit); BCC flattens.
-  if (alloy.dbtt !== null && amp < alloy.fatigue1e7) return Infinity
+  if (hasEnduranceLimit(alloy) && amp < alloy.fatigue1e7) return Infinity
   const b2 = b * 0.35
   return 1e7 * Math.pow(amp / alloy.fatigue1e7, 1 / b2)
 }
@@ -452,27 +500,42 @@ function fatigue(alloy: Alloy, mode: FailureMode, p: Params): TestState {
 
 // --------------------------------------------------------------------- creep
 
-/** Larson-Miller rupture time, hours. Fit anchored on 304 stress-rupture data. */
+/** Melting point of the grade the Larson-Miller fit was made on (304), K. */
+const REFERENCE_TM_K = 1700
+
+/**
+ * Larson-Miller rupture time, hours. Fit anchored on 304 stress-rupture data.
+ *
+ * Creep is a homologous-temperature phenomenon: what matters is T / T_melt.
+ * Other grades are mapped onto the 304 fit by scaling their absolute
+ * temperature by 1700 / T_melt — which is why a tin solder at 20 °C lands where
+ * a stainless steel lands at 750 °C. Grades whose service ceiling sits low
+ * relative to their melting point (phase instabilities, over-ageing) behave as
+ * if more heavily loaded.
+ */
 export function rupturTime(alloy: Alloy, sigmaMPa: number, tempC: number): number {
   if (sigmaMPa <= 0.5) return Infinity
   const tK = tempC + 273.15
-  // Grades with a low service ceiling behave as if far more heavily loaded.
-  const f = clamp(Math.pow(alloy.maxServiceC / 870, 1.2), 0.15, 1.15)
+  if (tK >= alloy.tmK) return 0
+  const tEff = tK * (REFERENCE_TM_K / alloy.tmK)
+  const f = clamp(Math.pow((alloy.maxServiceC + 273.15) / (0.5 * alloy.tmK), 1.2), 0.15, 1.0)
   const sEff = sigmaMPa / f
   const lmp = (6.6145 - Math.log10(sEff)) / 2.2e-4
-  const t = Math.pow(10, lmp / tK - 20)
+  const t = Math.pow(10, lmp / tEff - 20)
   return Math.min(t, 1e12)
 }
 
 function creep(alloy: Alloy, mode: FailureMode, p: Params): TestState {
   const sigma = p.stressFrac * alloy.Rp02
   const t = Math.pow(10, p.timeLogH)
+  const molten = p.tempC + 273.15 >= alloy.tmK
   const tr = rupturTime(alloy, sigma, p.tempC)
-  const lf = Number.isFinite(tr) ? clamp(t / tr) : 0
+  const lf = molten ? 1 : Number.isFinite(tr) ? clamp(t / tr) : 0
   const failed = lf >= 1
+  const homologous = (p.tempC + 273.15) / alloy.tmK
   // Primary + secondary + tertiary, reaching about 20% at rupture.
   const strain = 0.004 + 0.012 * Math.pow(lf, 0.4) + 0.03 * lf + 0.15 * Math.pow(lf, 8)
-  const stageName = lf >= 1 ? 'انفصل — نهاية المرحلة الثالثة' : lf > 0.75 ? 'المرحلة الثالثة — تسارع' : lf > 0.1 ? 'المرحلة الثانوية — معدل ثابت' : 'المرحلة الأوّلية'
+  const stageName = molten ? 'انصهر' : lf >= 1 ? 'انفصل — نهاية المرحلة الثالثة' : lf > 0.75 ? 'المرحلة الثالثة — تسارع' : lf > 0.1 ? 'المرحلة الثانوية — معدل ثابت' : homologous < 0.3 ? 'تحت 0.3 من الانصهار — لا زحف يُذكر' : 'المرحلة الأوّلية'
   const hot = hotFactor(alloy, p.tempC)
   const overTemp = p.tempC > alloy.maxServiceC
 
@@ -502,8 +565,12 @@ function creep(alloy: Alloy, mode: FailureMode, p: Params): TestState {
       { labelAr: 'انفعال الزحف', value: fmt(strain * 100, 2), unit: '%' },
       { labelAr: 'معامل Larson-Miller', value: fmt((p.tempC + 273.15) * (20 + Math.log10(Math.max(t, 1e-3))) / 1000, 2), unit: '×10³' },
       { labelAr: 'أقصى حرارة خدمة', value: fmt(alloy.maxServiceC, 0), unit: '°م', tone: overTemp ? 'fail' : 'info' },
+      { labelAr: 'الحرارة المتجانسة T/Tm', value: fmt(homologous, 2), unit: '', tone: homologous >= 0.4 ? 'warn' : 'ok' },
+      { labelAr: 'درجة الانصهار', value: fmt(alloy.tmK - 273.15, 0), unit: '°م', tone: 'info' },
     ],
-    verdictAr: failed
+    verdictAr: molten
+      ? `فوق درجة انصهار السبيكة (${fmt(alloy.tmK - 273.15, 0)} °م). لم يعد هذا زحفًا.`
+      : failed
       ? `انفصل بعد ${fmtHours(tr)} عند إجهاد ${fmt(sigma, 0)} MPa — وهو ${fmt(p.stressFrac * 100, 0)}% فقط من Rp0.2. الحرارة والزمن فعلا ما عجز عنه الحمل.`
       : overTemp
         ? `تشغيل فوق حدّ الخدمة (${alloy.maxServiceC} °م) لهذه السبيكة — الزحف ليس المشكلة الوحيدة هنا.`
@@ -545,15 +612,15 @@ function impact(alloy: Alloy, mode: FailureMode, p: Params): TestState {
       { labelAr: 'درجة الانتقال DBTT', value: alloy.dbtt === null ? 'لا توجد' : fmt(alloy.dbtt, 0), unit: alloy.dbtt === null ? '' : '°م', tone: alloy.dbtt === null ? 'ok' : 'warn' },
       { labelAr: 'نسبة السطح القصف', value: fmt(brittle * 100, 0), unit: '%', tone: brittle > 0.5 ? 'fail' : 'ok' },
       { labelAr: 'التمدّد الجانبي', value: fmt(lateralExp, 2), unit: 'mm' },
-      { labelAr: 'البنية البلورية', value: alloy.structure === 'austenitic' ? 'FCC' : alloy.structure === 'duplex' ? 'FCC + BCC' : 'BCC / BCT', tone: 'info' },
+      { labelAr: 'البنية البلورية', value: alloy.lattice, tone: 'info' },
       { labelAr: 'الحدّ الشائع للقبول', value: '27', unit: 'J', tone: 'info' },
     ],
     verdictAr: !struck
-      ? `اسحب الشريط ليضرب البندول. لاحظ أوّلًا: البنية ${alloy.structure === 'austenitic' ? 'FCC لا تملك درجة انتقال إطلاقًا' : 'BCC تملك درجة انتقال، وهي ما يقرّر المصير'}.`
+      ? `اسحب الشريط ليضرب البندول. لاحظ أوّلًا: البنية ${alloy.dbtt === null ? `${alloy.lattice} لا تملك درجة انتقال إطلاقًا` : alloy.dbtt > 150 ? 'قصفة عند كل حرارة — لم تغادر الرفّ السفلي أصلًا' : `${alloy.lattice} تملك درجة انتقال، وهي ما يقرّر المصير`}.`
       : brittle > 0.5
         ? `انشطرت عند ${fmt(p.tempC, 0)} °م بابتلاع ${fmt(cvn, 0)} J فقط — تحت درجة الانتقال ${alloy.dbtt} °م. السطح بلّوري لامع بلا تشوّه.`
         : alloy.dbtt === null
-          ? `ابتلعت ${fmt(cvn, 0)} J عند ${fmt(p.tempC, 0)} °م وانثنت دون أن تنفصل. البنية الأوستنيتية تفعل هذا حتى −196 °م — ولهذا تُبنى بها خزّانات الغاز المسال.`
+          ? `ابتلعت ${fmt(cvn, 0)} J عند ${fmt(p.tempC, 0)} °م وانثنت دون أن تنفصل. البنية ${alloy.lattice} بلا درجة انتقال — ${alloy.family === 'stainless' ? 'ولهذا تُبنى بها خزّانات الغاز المسال' : 'الطاقة المطلقة قد تكون منخفضة، لكنها لا تنهار فجأة بالبرد'}.`
           : `ما زلنا فوق درجة الانتقال: ابتلعت ${fmt(cvn, 0)} J. أنزل الحرارة وراقب الانهيار المفاجئ.`,
   }
 }
@@ -589,7 +656,9 @@ function pitting(alloy: Alloy, mode: FailureMode, p: Params): TestState {
       crackDepth: perforated ? 0.5 : 0,
     },
     readouts: [
-      { labelAr: 'PREN للسبيكة', value: fmt(alloy.cr + 3.3 * alloy.mo + 16 * alloy.nItr, 1), unit: '', tone: 'info' },
+      ...(alloy.family === 'stainless'
+        ? [{ labelAr: 'PREN للسبيكة', value: fmt(pren(alloy), 1), unit: '', tone: 'info' as const }]
+        : [{ labelAr: 'طبقة التخميل', value: alloy.family === 'aluminium' ? 'Al2O3' : alloy.family === 'titanium' ? 'TiO2' : 'Cu2O', tone: 'info' as const }]),
       { labelAr: 'درجة حرارة النقر الحرجة CPT', value: fmt(critical, 0), unit: '°م', tone: 'info' },
       { labelAr: 'الحرارة الحالية', value: fmt(p.tempC, 0), unit: '°م', tone: above > 0 ? 'fail' : 'ok' },
       { labelAr: 'الكلوريد', value: fmt(cl, 0), unit: 'ppm', tone: cl > 200 ? 'warn' : 'ok' },
@@ -601,7 +670,7 @@ function pitting(alloy: Alloy, mode: FailureMode, p: Params): TestState {
       ? `ثُقب الجدار (${fmt(wall, 1)} mm) بينما فقدان الوزن الكلّي أقلّ من 0.1%. هذا هو خداع النقر: المعدن سليم والقطعة مسرّبة.`
       : !initiates
         ? above <= 0 && cl >= 10
-          ? `الحرارة ${fmt(p.tempC, 0)} °م تحت CPT البالغة ${fmt(critical, 0)} °م لهذه السبيكة (PREN ${fmt(alloy.cr + 3.3 * alloy.mo + 16 * alloy.nItr, 1)}). لن يبدأ النقر — ارفع الحرارة أو اخفض PREN لترى الفرق.`
+          ? `الحرارة ${fmt(p.tempC, 0)} °م تحت CPT البالغة ${fmt(critical, 0)} °م لهذه السبيكة${alloy.family === 'stainless' ? ` (PREN ${fmt(pren(alloy), 1)})` : ''}. لن يبدأ النقر — ارفع الحرارة أو بدّل السبيكة لترى الفرق.`
           : 'دون كلوريد كافٍ تعيد طبقة أوكسيد الكروم بناء نفسها فور أي خدش.'
         : `تجاوزنا CPT بـ ${fmt(above, 0)} درجة. الحفرة تسرّع نفسها: داخلها يزداد حموضةً وكلوريدًا كلّما عمقت.`,
   }
@@ -612,8 +681,10 @@ function pitting(alloy: Alloy, mode: FailureMode, p: Params): TestState {
 /** Time to chloride SCC failure, hours. Anchored: 304, 100 C, 1000 ppm, 0.5 Rp0.2 → ~300 h. */
 export function sccLife(alloy: Alloy, tempC: number, sf: number, cl: number): number {
   const susc = alloy.susceptibility.scc
-  // Grades with high nickel or a duplex structure only crack far hotter.
-  const threshold = 50 + 100 * (1 - susc)
+  // Stainless: grades with high nickel or a duplex structure only crack far
+  // hotter. Other families carry their own threshold — brass and 7075 crack
+  // at room temperature.
+  const threshold = sccThreshold(alloy)
   if (tempC < threshold || sf < 0.15 || cl < 10 || susc < 0.05) return Infinity
   const ea = 60000
   const r = 8.314
@@ -630,7 +701,7 @@ function scc(alloy: Alloy, mode: FailureMode, p: Params): TestState {
   const lf = Number.isFinite(tf) ? clamp(t / tf) : 0
   const failed = lf >= 1
   const susc = alloy.susceptibility.scc
-  const threshold = 50 + 100 * (1 - susc)
+  const threshold = sccThreshold(alloy)
 
   const missing: string[] = []
   if (sf < 0.15) missing.push('إجهاد الشدّ')
@@ -663,37 +734,44 @@ function scc(alloy: Alloy, mode: FailureMode, p: Params): TestState {
       { labelAr: 'عتبة الحرارة لهذه السبيكة', value: fmt(threshold, 0), unit: '°م', tone: 'info' },
       { labelAr: 'زمن التعرّض', value: fmtHours(t), unit: '' },
       { labelAr: 'الزمن حتى الفشل', value: fmtHours(tf), unit: '', tone: Number.isFinite(tf) ? 'fail' : 'ok' },
-      { labelAr: 'النيكل', value: fmt(alloy.ni, 1), unit: '%', tone: 'info' },
+      ...(alloy.family === 'stainless' ? [{ labelAr: 'النيكل', value: fmt(alloy.ni, 1), unit: '%', tone: 'info' as const }] : []),
     ],
     verdictAr: failed
       ? `تشقّق نافذ بعد ${fmtHours(tf)}. لا تشوّه، ولا نقصان سُمك، ولا فقدان وزن — الأنبوب يبدو جديدًا ثم ينفجر.`
       : missing.length
         ? `الفشل ممتنع: ${missing.join(' و')} غير متوفّر. مثلّث SCC يحتاج أضلاعه الثلاثة معًا، وكسر ضلع واحد يكفي للحماية.`
-        : `الأضلاع الثلاثة مكتملة. النيكل ${fmt(alloy.ni, 1)}% ${susc > 0.7 ? 'في أسوأ نطاق ممكن' : 'يمنح مقاومة جيّدة'} — العمر المتبقّي ${fmtHours(Math.max(0, tf - t))}.`,
+        : `الأضلاع الثلاثة مكتملة. ${alloy.family === 'stainless' ? `النيكل ${fmt(alloy.ni, 1)}% ${susc > 0.7 ? 'في أسوأ نطاق ممكن' : 'يمنح مقاومة جيّدة'}` : susc > 0.6 ? 'هذه السبيكة من الأشدّ قابلية في بيئتها' : 'قابلية هذه السبيكة محدودة'} — العمر المتبقّي ${fmtHours(Math.max(0, tf - t))}.`,
   }
 }
 
 // ----------------------------------------------------------------------- IGC
 
-/** Hours at temperature before the boundary chromium drops below 12%. */
+/**
+ * Hours at temperature before the boundary loses its protection — chromium
+ * below 12% in stainless, a continuous Mg2Al3 film in Al-Mg. The window and
+ * its nose belong to the alloy; the C-curve shape is common to both.
+ */
 export function sensitisationTime(alloy: Alloy, tempC: number): number {
-  if (tempC < 425 || tempC > 815) return Infinity
+  const w = sensitisationWindow(alloy)
+  if (tempC < w.lowC || tempC > w.highC) return Infinity
   const igcS = Math.max(0.02, alloy.susceptibility.igc)
-  // C-curve: fastest at 700 C, slowing towards both ends of the range.
-  const base = 0.02 / Math.pow(igcS, 3)
-  return base * Math.exp(Math.pow((tempC - 700) / 120, 2))
+  const base = w.baseHours ?? 0.02 / Math.pow(igcS, 3)
+  return base * Math.exp(Math.pow((tempC - w.noseC) / w.widthC, 2))
 }
 
 function igc(alloy: Alloy, mode: FailureMode, p: Params): TestState {
   const t = Math.pow(10, p.timeLogH)
   const ts = sensitisationTime(alloy, p.tempC)
-  const inRange = p.tempC >= 425 && p.tempC <= 815
+  const w = sensitisationWindow(alloy)
+  const inRange = p.tempC >= w.lowC && p.tempC <= w.highC
+  const stainless = alloy.family === 'stainless'
+  const phase = stainless ? 'Cr23C6' : 'Mg2Al3 (β)'
   const sens = Number.isFinite(ts) ? clamp((Math.log10(t / ts) + 1) / 2) : 0
   const failed = sens >= 0.85
 
   return {
     alloy, mode,
-    stageAr: !inRange ? 'خارج النطاق الحرج 425–815 °م' : sens < 0.05 ? 'لم يبدأ الترسّب بعد' : sens < 0.5 ? 'ترسّب Cr23C6 عند الحدود' : failed ? 'تفكّك بين-حبيبي' : 'استنفاد الكروم تحت 12%',
+    stageAr: !inRange ? `خارج النطاق الحرج ${w.lowC}–${w.highC} °م` : sens < 0.05 ? 'لم يبدأ الترسّب بعد' : sens < 0.5 ? `ترسّب ${phase} عند الحدود` : failed ? 'تفكّك بين-حبيبي' : stainless ? 'استنفاد الكروم تحت 12%' : 'شبكة β مستمرّة — أنودية للحدود',
     stageTone: !inRange ? 'ok' : failed ? 'fail' : sens > 0.4 ? 'warn' : 'info',
     progress: sens,
     failed,
@@ -707,21 +785,27 @@ function igc(alloy: Alloy, mode: FailureMode, p: Params): TestState {
       brittle: 1,
     },
     readouts: [
-      { labelAr: 'الكربون في السبيكة', value: fmt(alloy.c, 3), unit: '%', tone: alloy.c <= 0.03 ? 'ok' : 'warn' },
+      ...(stainless ? [{ labelAr: 'الكربون في السبيكة', value: fmt(alloy.c, 3), unit: '%', tone: (alloy.c <= 0.03 ? 'ok' : 'warn') as Tone }] : []),
       { labelAr: 'الحرارة', value: fmt(p.tempC, 0), unit: '°م', tone: inRange ? 'warn' : 'ok' },
       { labelAr: 'زمن البقاء', value: fmtHours(t), unit: '' },
       { labelAr: 'زمن بدء التحسّس', value: fmtHours(ts), unit: '', tone: 'info' },
       { labelAr: 'درجة التحسّس', value: fmt(sens * 100, 0), unit: '%', tone: failed ? 'fail' : sens > 0.4 ? 'warn' : 'ok' },
-      { labelAr: 'أسرع ترسّب عند', value: '700', unit: '°م', tone: 'info' },
-      { labelAr: 'التثبيت', value: alloy.id === '321' ? 'Ti — محمية' : alloy.c <= 0.03 ? 'سبيكة L — محمية' : 'لا يوجد', tone: alloy.susceptibility.igc < 0.2 ? 'ok' : 'fail' },
+      { labelAr: 'أسرع ترسّب عند', value: fmt(w.noseC, 0), unit: '°م', tone: 'info' },
+      ...(stainless
+        ? [{ labelAr: 'التثبيت', value: alloy.id === '321' ? 'Ti — محمية' : alloy.c <= 0.03 ? 'سبيكة L — محمية' : 'لا يوجد', tone: (alloy.susceptibility.igc < 0.2 ? 'ok' : 'fail') as Tone }]
+        : [{ labelAr: 'الطور المترسّب', value: phase, tone: 'info' as const }]),
     ],
     verdictAr: failed
       ? 'شبكة الحدود الحبيبية صارت مسارًا مستمرًّا بلا حماية. القطعة تتفتّت إلى حبيبات، ويتحوّل رنينها عند الطرق إلى صوت مكتوم.'
       : !inRange
-        ? 'خارج النطاق الحرج لا يترسّب الكربيد مهما طال الزمن. المشكلة كلّها في هذا النطاق الضيّق — وهو بالضبط ما يمرّ به المعدن على جانبي اللحام.'
+        ? stainless
+          ? 'خارج النطاق الحرج لا يترسّب الكربيد مهما طال الزمن. المشكلة كلّها في هذا النطاق الضيّق — وهو بالضبط ما يمرّ به المعدن على جانبي اللحام.'
+          : `تحت ${w.lowC} °م لا يترسّب β مهما طال الزمن — ولهذا حدّ خدمة 5083 هو 65 °م لا أكثر.`
         : alloy.susceptibility.igc < 0.2
           ? `${alloy.label} محمية: ${alloy.id === '321' ? 'التيتانيوم يرتبط بالكربون قبل أن يصل إلى الكروم' : 'الكربون أقلّ من 0.03% فلا يتبقّى ما يترسّب'}. لاحظ كم يطول زمن بدء التحسّس مقارنةً بـ 304.`
-          : `عند ${fmt(p.tempC, 0)} °م يبدأ التحسّس خلال ${fmtHours(ts)} فقط. هذا هو Weld Decay: شريطان على جانبي اللحام لا اللحام نفسه.`,
+          : stainless
+            ? `عند ${fmt(p.tempC, 0)} °م يبدأ التحسّس خلال ${fmtHours(ts)} فقط. هذا هو Weld Decay: شريطان على جانبي اللحام لا اللحام نفسه.`
+            : `عند ${fmt(p.tempC, 0)} °م يبدأ التحسّس خلال ${fmtHours(ts)}. خزّان يعمل دافئًا لأشهر يخرج من الخدمة وهو يبدو سليمًا — اختبار ASTM G67 يكشفه.`,
   }
 }
 
@@ -766,12 +850,12 @@ function hydrogen(alloy: Alloy, mode: FailureMode, p: Params): TestState {
       { labelAr: 'هامش الأمان', value: fmt(margin * 100, 0), unit: 'نقطة %', tone: margin < 0.1 ? 'fail' : margin < 0.3 ? 'warn' : 'ok' },
       { labelAr: 'القساوة التقريبية', value: fmt(hrc, 0), unit: 'HRC', tone: hrc > 22 ? 'fail' : 'ok' },
       { labelAr: 'حدّ NACE MR0175', value: '22', unit: 'HRC', tone: 'info' },
-      { labelAr: 'البنية', value: alloy.structure === 'austenitic' ? 'FCC — مقاوِمة' : alloy.structure === 'duplex' ? 'مختلطة — متوسّطة' : 'BCC/BCT — قابلة', tone: alloy.susceptibility.hydrogen > 0.5 ? 'fail' : 'ok' },
+      { labelAr: 'البنية', value: `${alloy.lattice} — ${alloy.susceptibility.hydrogen < 0.2 ? 'مقاوِمة' : alloy.susceptibility.hydrogen < 0.6 ? 'متوسّطة' : 'قابلة'}`, tone: alloy.susceptibility.hydrogen > 0.5 ? 'fail' : 'ok' },
     ],
     verdictAr: failed
       ? `فشل عند ${fmt(sf * 100, 0)}% من Rp0.2 بينما العتبة ${fmt(th * 100, 0)}% — أي تحت إجهاد التصميم. والفشل مؤجَّل: قد يقع بعد ساعات من التحميل، فينفصل السبب عن النتيجة ويصعب التشخيص.`
       : alloy.susceptibility.hydrogen < 0.2
-        ? 'البنية الأوستنيتية FCC تذيب الهيدروجين وتنتشر فيه ببطء شديد — ولهذا تُعدّ الخيار الآمن في الخدمة الحامضة.'
+        ? `البنية ${alloy.lattice} ${alloy.family === 'stainless' ? 'الأوستنيتية تذيب الهيدروجين وتنتشر فيه ببطء شديد — ولهذا تُعدّ الخيار الآمن في الخدمة الحامضة' : 'لا تتقصّف بالهيدروجين بالمعنى الفولاذي'}.`
         : hrc > 22
           ? `القساوة ${fmt(hrc, 0)} HRC فوق حدّ NACE البالغ 22. ارفع الهيدروجين قليلًا وراقب انهيار العتبة.`
           : 'العتبة ما زالت فوق الإجهاد المسلّط — لكن الهامش يضيق بسرعة مع كل جزء في المليون.',

@@ -8,13 +8,13 @@
  * readings of the same numbers.
  */
 
-import { ALLOYS, alloyById, cpt, pren, type Alloy } from '../data/alloys'
+import { alloyById, cpt, pren, sensitisationWindow, type Alloy } from '../data/alloys'
 import { SPECIMEN } from '../data/specimen'
 import {
   charpyEnergy, engStress, fractureStrain, hotFactor, sampleCurve,
 } from '../engine/curve'
 import {
-  fatigueLife, hydrogenThreshold, rupturTime, sccLife, sensitisationTime,
+  fatigueLife, hasEnduranceLimit, hydrogenThreshold, rupturTime, sccLife, sensitisationTime,
 } from '../engine/failure'
 import type { Params } from '../engine/params'
 
@@ -132,7 +132,7 @@ export function chartFor(alloyId: string, modeId: string, p: Params): ChartSpec 
         }
         return out.sort((u, v) => u[0] - v[0])
       }
-      const ghost = a.dbtt === null ? alloyById('430') : alloyById('304')
+      const ghost = hasEnduranceLimit(a) ? alloyById('304') : alloyById('430')
       return {
         titleAr: 'منحنى S–N',
         xLabel: 'عدد الدورات N (لوغاريتمي)', yLabel: 'سعة الإجهاد MPa',
@@ -147,9 +147,9 @@ export function chartFor(alloyId: string, modeId: string, p: Params): ChartSpec 
           { axis: 'x', value: 7, labelAr: '10⁷', color: '#3a4856' },
         ],
         marker: [p.cyclesLog, p.stressAmp],
-        noteAr: a.dbtt === null
-          ? 'لاحظ أن المنحنى الأوستنيتي لا يستوي أبدًا: لا حدّ كلال حقيقيًّا، فالتصميم يكون على عمر محدّد.'
-          : 'البنية BCC تعطي حدّ كلال: تحت هذا المستوى عمر غير محدود نظريًّا.',
+        noteAr: hasEnduranceLimit(a)
+          ? `البنية ${a.lattice} تعطي حدّ كلال: تحت هذا المستوى عمر غير محدود نظريًّا.`
+          : `المنحنى لا يستوي أبدًا في البنية ${a.lattice}: لا حدّ كلال حقيقيًّا، فالتصميم يكون على عمر محدّد.`,
       }
     }
 
@@ -193,8 +193,8 @@ export function chartFor(alloyId: string, modeId: string, p: Params): ChartSpec 
         xLabel: 'درجة الحرارة °م', yLabel: 'طاقة الصدم J',
         xMin: -200, xMax: 160, yMin: 0, yMax: Math.max(a.cvnUpper, ghost.cvnUpper) * 1.12,
         series: [
-          { points: build(ghost), color: GHOST, dashed: true, labelAr: `${ghost.label} (${ghost.structure === 'austenitic' ? 'FCC' : 'BCC'})` },
-          { points: build(a), color: MAIN, labelAr: `${a.label} (${a.structure === 'austenitic' ? 'FCC' : a.structure === 'duplex' ? 'FCC+BCC' : 'BCC'})` },
+          { points: build(ghost), color: GHOST, dashed: true, labelAr: `${ghost.label} (${ghost.lattice})` },
+          { points: build(a), color: MAIN, labelAr: `${a.label} (${a.lattice})` },
         ],
         guides: [
           { axis: 'y', value: 27, labelAr: 'حدّ القبول 27 J', color: '#d02f2f' },
@@ -217,9 +217,7 @@ export function chartFor(alloyId: string, modeId: string, p: Params): ChartSpec 
         const lt = (5 * i) / 120
         pts.push([lt, Math.min(SPECIMEN.wallThickness, rate * Math.sqrt(Math.pow(10, lt)))])
       }
-      // The alloy ladder: where every grade's CPT sits.
-      const ladder: Array<[number, number]> = ALLOYS.map((x) => [0, cpt(x)])
-      void ladder
+      const prenNote = a.family === 'stainless' ? `PREN ${pren(a).toFixed(1)} يعطي CPT ${critical} °م` : `CPT المنشورة لهذه السبيكة ${critical} °م`
       return {
         titleAr: 'تعمّق الحفرة مع الزمن',
         xLabel: 'الزمن بالساعات (لوغاريتمي)', yLabel: 'عمق الحفرة mm',
@@ -229,8 +227,8 @@ export function chartFor(alloyId: string, modeId: string, p: Params): ChartSpec 
         marker: [p.timeLogH, Math.min(SPECIMEN.wallThickness, rate * Math.sqrt(Math.pow(10, p.timeLogH)))],
         failAboveY: SPECIMEN.wallThickness,
         noteAr: rate > 0
-          ? `PREN ${pren(a).toFixed(1)} يعطي CPT ${critical} °م، ونحن فوقها بـ ${above.toFixed(0)} درجة.`
-          : `PREN ${pren(a).toFixed(1)} يعطي CPT ${critical} °م. تحتها لا يبدأ النقر أصلًا — المنحنى مسطّح على الصفر.`,
+          ? `${prenNote}، ونحن فوقها بـ ${above.toFixed(0)} درجة.`
+          : `${prenNote}. تحتها لا يبدأ النقر أصلًا — المنحنى مسطّح على الصفر.`,
       }
     }
 
@@ -266,31 +264,38 @@ export function chartFor(alloyId: string, modeId: string, p: Params): ChartSpec 
     }
 
     case 'igc': {
-      // The classic TTT C-curve: time on x, temperature on y.
+      // The classic TTT C-curve: time on x, temperature on y, in the alloy's window.
+      const w = sensitisationWindow(a)
       const build = (al: Alloy): Array<[number, number]> => {
         const out: Array<[number, number]> = []
-        for (let t = 426; t <= 814; t += 3) {
+        const ww = sensitisationWindow(al)
+        const step = (ww.highC - ww.lowC) / 130
+        for (let t = ww.lowC + step; t < ww.highC; t += step) {
           const ts = sensitisationTime(al, t)
           if (Number.isFinite(ts)) out.push([Math.log10(ts), t])
         }
         return out
       }
-      const ghost = a.id === '304' ? alloyById('316L') : alloyById('304')
+      // A ghost only makes sense inside the same window.
+      const ghost = a.family === 'stainless' ? (a.id === '304' ? alloyById('316L') : alloyById('304')) : null
+      const pad = (w.highC - w.lowC) * 0.08
       return {
         titleAr: 'منحنى التحسّس TTT',
         xLabel: 'الزمن بالساعات (لوغاريتمي)', yLabel: 'درجة الحرارة °م',
-        xMin: -3, xMax: 3, yMin: 400, yMax: 850,
+        xMin: a.family === 'stainless' ? -3 : 0, xMax: a.family === 'stainless' ? 3 : 5, yMin: w.lowC - pad, yMax: w.highC + pad,
         series: [
-          { points: build(ghost), color: GHOST, dashed: true, labelAr: ghost.label },
+          ...(ghost ? [{ points: build(ghost), color: GHOST, dashed: true, labelAr: ghost.label }] : []),
           { points: build(a), color: MAIN, labelAr: a.label },
         ],
         guides: [
-          { axis: 'y', value: 700, labelAr: 'أنف المنحنى 700 °م', color: HOT },
-          { axis: 'y', value: 425, labelAr: '425 °م', color: '#3a4856' },
-          { axis: 'y', value: 815, labelAr: '815 °م', color: '#3a4856' },
+          { axis: 'y', value: w.noseC, labelAr: `أنف المنحنى ${w.noseC} °م`, color: HOT },
+          { axis: 'y', value: w.lowC, labelAr: `${w.lowC} °م`, color: '#3a4856' },
+          { axis: 'y', value: w.highC, labelAr: `${w.highC} °م`, color: '#3a4856' },
         ],
         marker: [p.timeLogH, p.tempC],
-        noteAr: 'يسار المنحنى آمن ويمينه متحسّس. المسافة الأفقية بين الخطّين هي كل الفرق بين 304 وسبيكة L.',
+        noteAr: ghost
+          ? 'يسار المنحنى آمن ويمينه متحسّس. المسافة الأفقية بين الخطّين هي كل الفرق بين 304 وسبيكة L.'
+          : 'يسار المنحنى آمن ويمينه متحسّس. لاحظ المقياس: الزمن هنا بالأشهر لا بالدقائق، والنطاق أبرد بخمسمئة درجة من نطاق الفولاذ.',
       }
     }
 

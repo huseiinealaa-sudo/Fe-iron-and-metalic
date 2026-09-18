@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { alloyById } from '../data/alloys'
+import { alloyById, FAMILY_AR } from '../data/alloys'
 import { useStore } from '../store/useStore'
 import { useTestState } from './useTestState'
 
@@ -52,6 +52,13 @@ export function Explain() {
       </div>
 
       <p className="text-xs leading-7 text-steel-400">{body}</p>
+
+      {tab === 'mechanism' && m.familyNotesAr?.[alloy.family] && (
+        <aside className="rounded-lg border border-accent/30 bg-accent/5 px-3 py-2">
+          <h3 className="text-2xs font-semibold text-accent mb-1">في {FAMILY_AR[alloy.family]}</h3>
+          <p className="text-xs leading-6 text-steel-400">{m.familyNotesAr[alloy.family]}</p>
+        </aside>
+      )}
 
       <div className="pt-2 border-t border-shell-700/50 min-w-0">
         <code className="ltr block text-2xs text-steel-500 bg-shell-950/70 rounded px-2 py-1.5 overflow-x-auto whitespace-pre">

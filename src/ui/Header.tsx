@@ -5,15 +5,15 @@ export function Header() {
         <div className="flex items-baseline gap-2 min-w-0">
           <span className="text-accent font-bold text-lg ltr">Fe</span>
           <h1 className="text-sm font-bold text-steel-300 truncate">
-            كيف يفشل الفولاذ غير القابل للصدأ
+            كيف تفشل المعادن والسبائك
           </h1>
           <span className="text-2xs text-steel-600 hidden sm:inline">
             مخطّط تفاعلي ثلاثي الأبعاد
           </span>
         </div>
         <p className="text-2xs text-steel-500 leading-snug max-w-[46ch]">
-          هذا المعدن نادرًا ما يفشل لأن الحمل تجاوز متانته. يفشل لأن طبقة أوكسيد الكروم التي
-          تحميه هُزمت — أو لأن الزمن والحرارة والدورات فعلت ما عجز عنه الحمل.
+          المعدن نادرًا ما يفشل لأن الحمل تجاوز متانته وحده. يفشل حين تجتمع عليه البيئة والزمن
+          والحرارة والدورات — أو حين تُختار سبيكة لموضع لا يناسبها. ثماني عشرة سبيكة، اثنا عشر نمطًا.
         </p>
       </div>
     </header>

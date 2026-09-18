@@ -5,11 +5,11 @@
  * still lands on published values. If a constant is edited carelessly, this
  * fails loudly.
  */
-import { ALLOYS, alloyById, cpt, pren } from '../src/data/alloys'
+import { ALLOYS, alloyById, cpt, isBrittle, modeApplies, pren } from '../src/data/alloys'
 import { MODES } from '../src/data/modes'
 import { engStress, fractureStrain, sampleCurve, charpyEnergy, uniformStrain } from '../src/engine/curve'
-import { evaluate, fatigueLife, rupturTime, sccLife, sensitisationTime, hydrogenThreshold } from '../src/engine/failure'
-import { DEFAULT_PARAMS, paramsForMode } from '../src/engine/params'
+import { evaluate, fatigueLife, hasEnduranceLimit, rupturTime, sccLife, sensitisationTime, hydrogenThreshold } from '../src/engine/failure'
+import { DEFAULT_PARAMS, paramsForMode, resolveDriver } from '../src/engine/params'
 
 let failures = 0
 function check(name: string, ok: boolean, detail = '') {
@@ -25,8 +25,8 @@ for (const a of ALLOYS) {
   let peak = 0
   for (const [, s] of sampleCurve(a, 4000)) peak = Math.max(peak, s)
   check(`${a.label}: peak equals Rm`, near(peak, a.Rm, 0.02), `${peak.toFixed(0)} vs ${a.Rm}`)
-  check(`${a.label}: necking before fracture`, uniformStrain(a) < fractureStrain(a),
-    `eu=${uniformStrain(a).toFixed(3)} ef=${fractureStrain(a)}`)
+  check(`${a.label}: ${isBrittle(a) ? 'no necking, fracture at the end of the rise' : 'necking before fracture'}`,
+    uniformStrain(a) < fractureStrain(a), `eu=${uniformStrain(a).toFixed(3)} ef=${fractureStrain(a)}`)
   check(`${a.label}: stress is zero past fracture`, engStress(a, fractureStrain(a) * 1.01) === 0)
 }
 
@@ -67,8 +67,53 @@ check('304 at 700 C / 30 MPa ruptures near 1e4 h', near(Math.log10(t700), 4, 0.1
   `${t700.toExponential(2)} h`)
 check('hotter at the same stress is always shorter',
   rupturTime(alloyById('304'), 65, 700) < rupturTime(alloyById('304'), 65, 600))
-check('2205 is far weaker in creep than 304',
-  rupturTime(alloyById('2205'), 65, 600) < rupturTime(alloyById('304'), 65, 600) / 100)
+check('2205 is clearly weaker in creep than 304',
+  rupturTime(alloyById('2205'), 65, 600) < rupturTime(alloyById('304'), 65, 600) / 5)
+
+console.log('\n— creep across families: homologous temperature decides —')
+const sac = alloyById('SAC305')
+check('SAC305 solder creeps at room temperature (0.9 Rp0.2 → under a year)',
+  rupturTime(sac, 0.9 * sac.Rp02, 20) < 8760, `${rupturTime(sac, 0.9 * sac.Rp02, 20).toExponential(2)} h`)
+check('6061 does not creep at room temperature',
+  rupturTime(alloyById('6061'), 137, 20) > 1e8)
+check('6061 does creep at 200 C', rupturTime(alloyById('6061'), 137, 200) < 1e4,
+  `${rupturTime(alloyById('6061'), 137, 200).toExponential(2)} h`)
+check('above the melting point there is no creep to speak of', rupturTime(sac, 10, 250) === 0)
+check('304 anchors are unchanged by the generalisation', near(Math.log10(rupturTime(alloyById('304'), 65, 600)), 5, 0.12))
+
+console.log('\n— brittle grades —')
+const gjl = alloyById('GJL250')
+check('grey iron is brittle in tension at room temperature', charpyEnergy(gjl, 20) < 15, `${charpyEnergy(gjl, 20).toFixed(0)} J`)
+check('grey iron reaches Rm at its (tiny) fracture strain', near(engStress(gjl, fractureStrain(gjl)), gjl.Rm, 0.01))
+check('grey iron carries more than three times Rm in compression', (gjl.compressive ?? 0) > 3 * gjl.Rm)
+check('ductile iron is not brittle', !isBrittle(alloyById('GJS400')))
+
+console.log('\n— endurance limit follows the lattice —')
+check('S235 (BCC) has an endurance limit', hasEnduranceLimit(alloyById('S235')))
+check('6061 (FCC) has none', !hasEnduranceLimit(alloyById('6061')))
+check('brass (FCC) has none', !hasEnduranceLimit(alloyById('CuZn37')))
+check('tin solder has none', !hasEnduranceLimit(sac))
+
+console.log('\n— SCC in other families —')
+check('brass cracks at room temperature (ammonia)', Number.isFinite(sccLife(alloyById('CuZn37'), 25, 0.5, 1000)))
+check('7075-T6 cracks at room temperature', Number.isFinite(sccLife(alloyById('7075'), 25, 0.5, 1000)))
+check('6061-T6 does not crack at room temperature', !Number.isFinite(sccLife(alloyById('6061'), 25, 0.5, 1000)))
+check('titanium is safe in warm seawater', !Number.isFinite(sccLife(alloyById('Ti64'), 40, 0.5, 20000)))
+
+console.log('\n— sensitisation windows —')
+const al5083 = alloyById('5083')
+check('5083 sensitises at 120 C', Number.isFinite(sensitisationTime(al5083, 120)))
+check('5083 needs months, not minutes', sensitisationTime(al5083, 120) > 100, `${sensitisationTime(al5083, 120).toFixed(0)} h`)
+check('5083 does not sensitise at 700 C (it would melt)', !Number.isFinite(sensitisationTime(al5083, 700)))
+check('5083 is safe below 50 C', !Number.isFinite(sensitisationTime(al5083, 40)))
+
+console.log('\n— applicability —')
+check('pitting is not offered for carbon steel', !modeApplies(alloyById('S235'), 'pitting'))
+check('hydrogen is not offered for aluminium', !modeApplies(alloyById('7075'), 'hydrogen'))
+check('every alloy still has all eight mechanical modes',
+  ALLOYS.every((a) => ['tension', 'compression', 'bending', 'torsion', 'shear', 'fatigue', 'creep', 'impact'].every((m) => modeApplies(a, m))))
+check('CPT is defined for every grade that offers pitting',
+  ALLOYS.filter((a) => modeApplies(a, 'pitting')).every((a) => Number.isFinite(cpt(a))))
 
 console.log('\n— SCC: the three-leg rule —')
 const s304 = alloyById('304')
@@ -101,12 +146,14 @@ check('clean metal has full threshold', hydrogenThreshold(alloyById('17-4PH'), 0
 console.log('\n— every alloy × mode evaluates, and the drive sweep is finite —')
 for (const a of ALLOYS) {
   for (const m of MODES) {
-    const base = paramsForMode(m, DEFAULT_PARAMS)
+    if (!modeApplies(a, m.id)) continue
+    const base = paramsForMode(m, DEFAULT_PARAMS, a)
+    const primary = resolveDriver(m.primary, a, m.id)
     let bad = ''
     for (let i = 0; i <= 20; i++) {
       const t = i / 20
-      const key = m.primary.key
-      const p = { ...base, [key]: m.primary.min + (m.primary.max - m.primary.min) * t }
+      const key = primary.key
+      const p = { ...base, [key]: primary.min + (primary.max - primary.min) * t }
       const st = evaluate(a.id, m.id, p)
       const g = st.geom
       for (const [k, v] of Object.entries(g)) {

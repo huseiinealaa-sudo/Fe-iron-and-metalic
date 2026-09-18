@@ -7,7 +7,7 @@
  * (E, Rp0.2, Rm, n) the curve is fully determined.
  */
 
-import type { Alloy } from '../data/alloys'
+import { isBrittle, type Alloy } from '../data/alloys'
 
 /** Young's modulus in MPa (alloys store GPa). */
 export function emod(a: Alloy): number {
@@ -33,6 +33,8 @@ export function strainShift(a: Alloy): number {
 
 /** Engineering strain at which necking starts (Considère). */
 export function uniformStrain(a: Alloy): number {
+  // A brittle grade never necks: it lets go at the end of the elastic-ish rise.
+  if (isBrittle(a)) return fractureStrain(a) * 0.98
   return Math.exp(a.n - strainShift(a)) - 1
 }
 
@@ -55,6 +57,11 @@ export function engStress(a: Alloy, eps: number): number {
   const eu = uniformStrain(a)
   const ef = fractureStrain(a)
   if (eps > ef) return 0
+
+  // Grey iron and its kin: a concave curve from the origin (the graphite flakes
+  // open progressively, so the secant modulus falls with load) that reaches Rm
+  // exactly at the fracture strain. Hollomon cannot get there in under 1%.
+  if (isBrittle(a)) return a.Rm * Math.pow(eps / ef, 0.6)
 
   const peak = hardeningStress(a, eu)
   if (eps <= eu) return hardeningStress(a, eps)
@@ -110,6 +117,7 @@ export type TensileStage = 'elastic' | 'yield' | 'hardening' | 'necking' | 'frac
 
 export function stageAt(a: Alloy, eps: number): TensileStage {
   if (eps >= fractureStrain(a)) return 'fractured'
+  if (isBrittle(a)) return 'elastic'
   if (eps > uniformStrain(a)) return 'necking'
   const ey = a.Rp02 / emod(a)
   if (eps > ey * 1.6) return 'hardening'

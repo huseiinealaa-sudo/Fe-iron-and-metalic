@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react'
+import { alloyById } from '../data/alloys'
 import { modeById, type Driver } from '../data/modes'
+import { resolveDriver } from '../engine/params'
 import { useStore } from '../store/useStore'
 
 function formatDriver(d: Driver, raw: number): string {
@@ -56,7 +58,7 @@ function useAutoPlay() {
   useEffect(() => {
     if (!playing) return
     const mode = modeById(modeId)
-    const d = mode.primary
+    const d = resolveDriver(mode.primary, alloyById(useStore.getState().alloyId), mode.id)
     last.current = performance.now()
     const step = (now: number) => {
       const dt = Math.min(0.05, (now - last.current) / 1000)
@@ -80,6 +82,7 @@ function useAutoPlay() {
 
 export function Controls() {
   const modeId = useStore((s) => s.modeId)
+  const alloyId = useStore((s) => s.alloyId)
   const playing = useStore((s) => s.playing)
   const setPlaying = useStore((s) => s.setPlaying)
   const resetDrive = useStore((s) => s.resetDrive)
@@ -88,11 +91,12 @@ export function Controls() {
   const sectioned = useStore((s) => s.sectioned)
   const toggleSection = useStore((s) => s.toggleSection)
   const mode = modeById(modeId)
+  const alloy = alloyById(alloyId)
   useAutoPlay()
 
   return (
     <div className="panel p-3 flex flex-col gap-2">
-      <Slider driver={mode.primary} big />
+      <Slider driver={resolveDriver(mode.primary, alloy, mode.id)} big />
 
       <div className="flex gap-2">
         <button
@@ -116,7 +120,7 @@ export function Controls() {
 
       {mode.secondary.length > 0 && (
         <div className="flex flex-col gap-1 pt-1 border-t border-shell-700/50">
-          {mode.secondary.map((d) => <Slider key={d.key} driver={d} />)}
+          {mode.secondary.map((d) => <Slider key={d.key} driver={resolveDriver(d, alloy, mode.id)} />)}
         </div>
       )}
 
