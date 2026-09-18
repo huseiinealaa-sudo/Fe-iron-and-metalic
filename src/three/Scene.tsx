@@ -77,6 +77,8 @@ function Backdrop() {
             float glow = max(0.0, dot(vDir, normalize(vec3(0.5, 0.35, 0.6))));
             c += vec3(0.08, 0.09, 0.11) * pow(glow, 5.0);
             gl_FragColor = vec4(c, 1.0);
+            // Colour uniforms arrive linear; the framebuffer is sRGB.
+            #include <colorspace_fragment>
           }
         `,
       }),
@@ -125,6 +127,7 @@ function Floor() {
             float ink = max(line * 0.5, major * 0.9);
             vec3 c = mix(uFloor, uLine, ink);
             gl_FragColor = vec4(c, fade * (0.75 + 0.25 * ink));
+            #include <colorspace_fragment>
           }
         `,
       }),
